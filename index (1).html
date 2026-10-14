@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Caisse Supermarché</title>
+<link rel="manifest" href="manifest.json"><link rel="icon" href="icon.svg">
+<meta name="theme-color" content="#14232b">
+<style>
+:root{--ink:#14232b;--bg:#eef2f0;--tag:#ffd23f;--ok:#1f7a5c;--bad:#c8402f;--line:#d3dbd7;font:16px/1.4 "Segoe UI",Roboto,system-ui,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink)}
+header{background:var(--ink);color:#fff;display:flex;flex-wrap:wrap;align-items:center;gap:.4rem;padding:.4rem 1rem;position:sticky;top:0;z-index:5}
+header b{margin-right:auto;font-size:1.1rem}
+nav{display:flex;gap:.2rem;flex-wrap:wrap}
+nav button{background:none;border:0;color:#cbd8d2;padding:.6rem .85rem;border-radius:6px;font:inherit;cursor:pointer}
+nav button.on{background:var(--tag);color:var(--ink);font-weight:700}
+main{padding:1rem;max-width:1200px;margin:auto}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:1rem;margin-bottom:1rem}
+.pos{display:grid;grid-template-columns:1fr 380px;gap:1rem;align-items:start}
+@media(max-width:850px){.pos{grid-template-columns:1fr}}
+input,select,button{font:inherit;padding:.65rem;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);min-width:0}
+input,select{width:100%}
+button{cursor:pointer}button.pri{background:var(--ok);color:#fff;border-color:var(--ok);font-weight:700}
+button.bad{color:var(--bad)}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--tag);outline-offset:1px}
+.row{display:flex;gap:.5rem;margin-bottom:.5rem}.row>*{flex:1}.row>button{flex:0 0 auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.5rem;margin-top:.5rem}
+.item{text-align:left;padding:.7rem}.item small{display:block;color:#5d6e67}
+.item b{background:var(--tag);padding:0 .35rem;border-radius:4px}
+table{width:100%;border-collapse:collapse}th,td{padding:.45rem;border-bottom:1px solid var(--line);text-align:left}
+td.n,th.n{text-align:right}.low{color:var(--bad);font-weight:700}
+.total{font-size:2rem;font-weight:800;display:flex;justify-content:space-between;background:var(--tag);padding:.4rem .7rem;border-radius:8px;margin:.6rem 0}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.5rem;margin-bottom:.8rem}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.6rem;margin-bottom:1rem}
+.kpi div{background:#fff;border:1px solid var(--line);border-radius:10px;padding:.8rem}.kpi b{display:block;font-size:1.4rem}
+#toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:.7rem 1.1rem;border-radius:8px;z-index:20}
+#modal{position:fixed;inset:0;background:#000d;z-index:30;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem}
+#modal[hidden]{display:none}#vid{width:min(92vw,560px);border-radius:10px}
+#tk{display:none}
+@media print{body>*:not(#tk){display:none!important}#tk{display:block;font:13px monospace;width:72mm}#tk td{border:0;padding:1px}}
+@media(prefers-reduced-motion:no-preference){nav button{transition:background .15s}}
+</style></head><body>
+<header><b id="shop"></b><nav id="nav"></nav></header>
+<main id="v"></main><div id="toast" hidden></div>
+<div id="modal" hidden><video id="vid" playsinline muted></video><button onclick="stopCam()">Fermer la caméra</button></div>
+<div id="tk"></div>
+<script>
+const $=s=>document.querySelector(s);
+let db=JSON.parse(localStorage.getItem('sm')||'null')||{p:[],s:[],m:[],c:[],cfg:{shop:'Mon supermarché',cur:'€'}};
+const save=()=>localStorage.setItem('sm',JSON.stringify(db));
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money=n=>(Math.round(n*100)/100).toLocaleString('fr-FR')+' '+esc(db.cfg.cur);
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+const day=d=>new Date(d).toLocaleDateString('sv-SE');const today=()=>day(Date.now());
+const tm=d=>new Date(d).toLocaleString('fr-FR');
+const prod=id=>db.p.find(p=>p.id==id);
+function toast(t){const e=$('#toast');e.textContent=t;e.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>e.hidden=true,2500)}
+let cart=[],tab='caisse';
+const TABS={caisse:'Caisse',produits:'Produits',stock:'Marchandises',tiroir:'Tiroir-caisse',rapports:'Rapports',params:'Paramètres'};
+function go(t){tab=t||tab;$('#shop').textContent=db.cfg.shop;
+ $('#nav').innerHTML=Object.entries(TABS).map(([k,v])=>`<button class="${k==tab?'on':''}" onclick="go('${k}')">${v}</button>`).join('');
+ $('#v').innerHTML=V[tab]();const i=$('#sc');if(i&&tab=='caisse')i.focus();if(tab=='caisse')drawCart()}
+/* ---------- Scanner caméra ---------- */
+let stream,raf;
+async function cam(cb,once){
+ if(!('BarcodeDetector' in window))return toast('Caméra non prise en charge ici : tapez le code ou utilisez un lecteur USB/Bluetooth.');
+ try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}})}catch(e){return toast('Caméra refusée (HTTPS requis).')}
+ $('#modal').hidden=false;const v=$('#vid');v.srcObject=stream;await v.play();
+ const det=new BarcodeDetector({formats:['ean_13','ean_8','upc_a','upc_e','code_128','code_39','qr_code']});let last=0;
+ const loop=async()=>{if($('#modal').hidden)return;
+  try{const r=await det.detect(v);if(r.length&&Date.now()-last>1200){last=Date.now();navigator.vibrate&&navigator.vibrate(60);cb(r[0].rawValue);if(once)return stopCam()}}catch(e){}
+  raf=requestAnimationFrame(loop)};loop()}
+function stopCam(){$('#modal').hidden=true;stream&&stream.getTracks().forEach(t=>t.stop());cancelAnimationFrame(raf)}
+/* ---------- Vues ---------- */
+const V={
+caisse:()=>`<div class="pos"><div class="card"><div class="row"><input id="sc" placeholder="Scanner un code-barres puis Entrée" autocomplete="off" onkeydown="if(event.key=='Enter'){addCode(this.value);this.value=''}"><button class="pri" onclick="cam(addCode)">Caméra</button></div>
+<input placeholder="Ou chercher un produit par nom" oninput="find(this.value)"><div class="grid" id="res"></div></div><aside class="card" id="cart"></aside></div>`,
+produits:()=>`<div class="card"><h2>Fiche produit</h2><input type="hidden" id="pid"><div class="form">
+<div class="row"><input id="pc" placeholder="Code-barres"><button onclick="cam(c=>$('#pc').value=c,1)">Scan</button></div>
+<input id="pn" placeholder="Nom du produit"><input id="pv" type="number" step="any" placeholder="Prix de vente"><input id="pa" type="number" step="any" placeholder="Prix d'achat"><input id="ps" type="number" step="any" placeholder="Stock actuel"><input id="pm" type="number" step="any" placeholder="Seuil d'alerte"></div>
+<button class="pri" onclick="saveP()">Enregistrer le produit</button></div>
+<div class="card"><input placeholder="Filtrer les produits" oninput="listP(this.value)"><div style="overflow:auto"><table id="pt"></table></div></div>`,
+stock:()=>`<div class="card"><h2>Entrée ou sortie de marchandises</h2><div class="form">
+<div class="row"><input id="mc" placeholder="Scanner le code" onkeydown="if(event.key=='Enter')pick(this.value)"><button onclick="cam(pick,1)">Scan</button></div>
+<select id="mp">${db.p.map(p=>`<option value="${p.id}">${esc(p.n)} (stock ${p.st})</option>`).join('')}</select>
+<select id="mt" onchange="$('#mr').innerHTML=mot(this.value)"><option value="in">Entrée</option><option value="out">Sortie</option></select>
+<select id="mr">${mot('in')}</select><input id="mq" type="number" step="any" placeholder="Quantité"><input id="mn" placeholder="Note (fournisseur, bon n°…)"></div>
+<button class="pri" onclick="moveS()">Valider le mouvement</button></div>
+<div class="card"><h2>Historique</h2><div style="overflow:auto"><table><tr><th>Date<th>Produit<th>Type<th>Motif<th class="n">Qté<th>Note</tr>${db.m.slice(-60).reverse().map(m=>`<tr><td>${tm(m.d)}<td>${esc(m.n)}<td>${m.t=='in'?'Entrée':'Sortie'}<td>${esc(m.r)}<td class="n">${m.q}<td>${esc(m.note)}</tr>`).join('')}</table></div></div>`,
+tiroir:()=>{const t=drawer(today());return`<div class="kpi"><div>Fond de caisse<b>${money(t.open)}</b></div><div>Ventes espèces<b>${money(t.cash)}</b></div><div>Entrées<b>${money(t.in)}</b></div><div>Sorties<b>${money(t.out)}</b></div><div>Espèces attendues<b>${money(t.bal)}</b></div></div>
+<div class="card"><h2>Mouvement de caisse</h2><div class="form"><select id="ct"><option value="open">Fond de caisse (ouverture)</option><option value="in">Entrée d'argent</option><option value="out">Sortie d'argent</option></select><input id="ca" type="number" step="any" placeholder="Montant"><input id="cn" placeholder="Motif (retrait, dépense, dépôt banque…)"></div><button class="pri" onclick="moveC()">Enregistrer</button></div>
+<div class="card"><table><tr><th>Heure<th>Type<th>Motif<th class="n">Montant</tr>${db.c.filter(c=>day(c.d)==today()).reverse().map(c=>`<tr><td>${tm(c.d)}<td>${{open:'Fond',in:'Entrée',out:'Sortie'}[c.t]}<td>${esc(c.note)}<td class="n">${money(c.a)}</tr>`).join('')}</table></div>`},
+rapports:()=>{const d=window.rd||today(),S=db.s.filter(s=>day(s.d)==d);let ca=0,mg=0,by={},top={};
+ S.forEach(s=>{ca+=s.tot;by[s.pay]=(by[s.pay]||0)+s.tot;s.it.forEach(i=>{mg+=(i.pu-i.pa)*i.q;top[i.n]=(top[i.n]||0)+i.q})});
+ const tp=Object.entries(top).sort((a,b)=>b[1]-a[1]).slice(0,8),low=db.p.filter(p=>p.st<=p.min);
+ return`<div class="card"><input type="date" value="${d}" onchange="rd=this.value;go()"></div><div class="kpi"><div>Chiffre d'affaires<b>${money(ca)}</b></div><div>Tickets<b>${S.length}</b></div><div>Marge estimée<b>${money(mg)}</b></div>${Object.entries(by).map(([k,v])=>`<div>${esc(k)}<b>${money(v)}</b></div>`).join('')}</div>
+<div class="card"><h2>Meilleures ventes</h2><table>${tp.map(([n,q])=>`<tr><td>${esc(n)}<td class="n">${q}</tr>`).join('')||'<tr><td>Aucune vente ce jour-là</tr>'}</table></div>
+<div class="card"><h2>Stock bas (${low.length})</h2><table>${low.map(p=>`<tr><td>${esc(p.n)}<td class="n low">${p.st}<td class="n">seuil ${p.min}</tr>`).join('')||'<tr><td>Rien à réapprovisionner</tr>'}</table></div>
+<button onclick="csv()">Exporter les ventes (CSV)</button>`},
+params:()=>`<div class="card"><h2>Paramètres</h2><div class="form"><input id="cs" value="${esc(db.cfg.shop)}" placeholder="Nom du magasin"><input id="cc" value="${esc(db.cfg.cur)}" placeholder="Devise (€, FCFA, $…)"></div><button class="pri" onclick="saveCfg()">Enregistrer</button></div>
+<div class="card"><h2>Sauvegarde</h2><div class="row"><button onclick="exp()">Exporter toutes les données</button><input type="file" accept=".json" onchange="imp(this.files[0])"></div><button class="bad" onclick="if(confirm('Tout effacer ?')){localStorage.removeItem('sm');location.reload()}">Effacer toutes les données</button></div>`};
+const mot=t=>(t=='in'?['Réception fournisseur','Retour client','Inventaire (+)']:['Perte','Casse','Péremption','Retour fournisseur','Inventaire (−)']).map(x=>`<option>${x}</option>`).join('');
+/* ---------- Caisse ---------- */
+function addCode(c){c=String(c).trim();const p=db.p.find(p=>p.code==c);if(!p)return toast('Code inconnu : '+c);add(p.id)}
+function add(id){const l=cart.find(x=>x.id==id);l?l.q++:cart.push({id,q:1});drawCart()}
+function find(q){q=q.toLowerCase();$('#res').innerHTML=q?db.p.filter(p=>p.n.toLowerCase().includes(q)||p.code.includes(q)).slice(0,24).map(p=>`<button class="item" onclick="add('${p.id}')">${esc(p.n)}<small>Stock ${p.st}</small><b>${money(p.pv)}</b></button>`).join(''):''}
+const total=()=>cart.reduce((s,l)=>s+prod(l.id).pv*l.q,0);
+function drawCart(){const e=$('#cart');if(!e)return;
+ e.innerHTML=`<h2>Ticket en cours</h2><table>${cart.map((l,i)=>{const p=prod(l.id);return`<tr><td>${esc(p.n)}<td><button onclick="qty(${i},-1)">−</button> ${l.q} <button onclick="qty(${i},1)">+</button><td class="n">${money(p.pv*l.q)}</tr>`}).join('')||'<tr><td>Scannez un article pour commencer</tr>'}</table>
+ <div class="total"><span>Total</span><span>${money(total())}</span></div>
+ <select id="pay" onchange="chg()"><option>Espèces</option><option>Carte</option><option>Mobile money</option></select>
+ <input id="rec" type="number" step="any" placeholder="Montant reçu" oninput="chg()" style="margin:.5rem 0"><div id="chg"></div>
+ <button class="pri" style="width:100%;margin-top:.5rem" onclick="pay()">Encaisser</button><button class="bad" style="width:100%;margin-top:.4rem" onclick="cart=[];drawCart()">Annuler le ticket</button>`}
+function qty(i,d){cart[i].q+=d;if(cart[i].q<=0)cart.splice(i,1);drawCart()}
+function chg(){const c=$('#pay').value=='Espèces';$('#rec').hidden=!c;$('#chg').innerHTML=c&&$('#rec').value?`Rendu : <b>${money(Math.max(0,$('#rec').value-total()))}</b>`:''}
+function pay(){if(!cart.length)return toast('Ticket vide');const m=$('#pay').value,r=+$('#rec').value||0;
+ if(m=='Espèces'&&r&&r<total())return toast('Montant reçu insuffisant');
+ const s={id:uid(),d:Date.now(),pay:m,tot:total(),rec:r,it:cart.map(l=>{const p=prod(l.id);p.st-=l.q;return{id:p.id,n:p.n,q:l.q,pu:p.pv,pa:p.pa}})};
+ db.s.push(s);save();ticket(s);cart=[];go()}
+function ticket(s){$('#tk').innerHTML=`<center><b>${esc(db.cfg.shop)}</b><br>${tm(s.d)}</center><table>${s.it.map(i=>`<tr><td>${esc(i.n)}<td>${i.q}×${i.pu}<td>${i.q*i.pu}</tr>`).join('')}</table><hr><b>TOTAL ${money(s.tot)}</b><br>${s.pay}${s.rec?` · reçu ${money(s.rec)} · rendu ${money(s.rec-s.tot)}`:''}<br><center>Merci de votre visite</center>`;setTimeout(()=>print(),100)}
+/* ---------- Produits ---------- */
+function listP(f=''){f=f.toLowerCase();$('#pt').innerHTML='<tr><th>Code<th>Nom<th class="n">Vente<th class="n">Stock<th></tr>'+db.p.filter(p=>p.n.toLowerCase().includes(f)||p.code.includes(f)).map(p=>`<tr><td>${esc(p.code)}<td>${esc(p.n)}<td class="n">${money(p.pv)}<td class="n ${p.st<=p.min?'low':''}">${p.st}<td><button onclick="editP('${p.id}')">Modifier</button> <button class="bad" onclick="delP('${p.id}')">Supprimer</button></tr>`).join('')}
+function saveP(){const g=i=>$('#'+i).value.trim(),code=g('pc'),n=g('pn');if(!code||!n||!g('pv'))return toast('Code, nom et prix de vente obligatoires');
+ const id=g('pid');if(db.p.some(p=>p.code==code&&p.id!=id))return toast('Ce code-barres existe déjà');
+ const o={code,n,pv:+g('pv'),pa:+g('pa')||0,st:+g('ps')||0,min:+g('pm')||0};
+ if(id)Object.assign(prod(id),o);else db.p.push({id:uid(),...o});save();toast('Produit enregistré');go()}
+function editP(id){const p=prod(id);$('#pid').value=id;$('#pc').value=p.code;$('#pn').value=p.n;$('#pv').value=p.pv;$('#pa').value=p.pa;$('#ps').value=p.st;$('#pm').value=p.min;scrollTo(0,0)}
+function delP(id){if(confirm('Supprimer ce produit ?')){db.p=db.p.filter(p=>p.id!=id);save();go()}}
+/* ---------- Marchandises & caisse ---------- */
+function pick(c){const p=db.p.find(p=>p.code==String(c).trim());p?$('#mp').value=p.id:toast('Code inconnu');$('#mq').focus()}
+function moveS(){const p=prod($('#mp').value),q=+$('#mq').value;if(!p||q<=0)return toast('Produit et quantité requis');const t=$('#mt').value;
+ p.st+=t=='in'?q:-q;db.m.push({d:Date.now(),id:p.id,n:p.n,t,q,r:$('#mr').value,note:$('#mn').value});save();toast('Stock mis à jour');go()}
+function drawer(d){let o=0,i=0,u=0,c=0;db.c.filter(x=>day(x.d)==d).forEach(x=>x.t=='open'?o+=x.a:x.t=='in'?i+=x.a:u+=x.a);
+ db.s.filter(s=>day(s.d)==d&&s.pay=='Espèces').forEach(s=>c+=s.tot);return{open:o,in:i,out:u,cash:c,bal:o+c+i-u}}
+function moveC(){const a=+$('#ca').value;if(a<=0)return toast('Montant requis');db.c.push({d:Date.now(),t:$('#ct').value,a,note:$('#cn').value});save();go()}
+/* ---------- Données ---------- */
+function saveCfg(){db.cfg={shop:$('#cs').value||'Mon supermarché',cur:$('#cc').value||'€'};save();go()}
+function dl(n,t,m){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:m}));a.download=n;a.click()}
+const exp=()=>dl('supermarche-'+today()+'.json',JSON.stringify(db),'application/json');
+function imp(f){if(!f)return;f.text().then(t=>{try{db=JSON.parse(t);save();go();toast('Données importées')}catch(e){toast('Fichier invalide')}})}
+function csv(){dl('ventes.csv','Date;Produit;Qté;Prix;Paiement\n'+db.s.flatMap(s=>s.it.map(i=>[tm(s.d),i.n,i.q,i.pu,s.pay].join(';'))).join('\n'),'text/csv')}
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+go();
+</script></body></html>
